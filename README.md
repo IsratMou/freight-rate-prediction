@@ -152,6 +152,6 @@ The December file holds the same Lexington → Fort Wayne, 360-mile, Dry Van, 32
 - [ ] Add an **accessible GitHub repository URL** to the submission (verify it without a login).
 - [ ] Record a **2–3 minute Loom**, add its shareable link here and submit it with the report/CSVs.
 
-**Loom walkthrough:** _Add a public/shareable Loom URL here after recording._
+**Loom walkthrough:** [https://www.loom.com/share/deb3582cc38047c6bbc7c66eae071ae6]
 
 For a detailed verification log, see [`FINALIZATION_CHECKLIST.md`](FINALIZATION_CHECKLIST.md). Scorer success is not evidence of performance on hidden targets; that result can only come from the evaluator.
