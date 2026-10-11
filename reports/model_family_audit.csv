@@ -1,0 +1,7 @@
+model,MAE_CLEAN,MAPE_CLEAN,R2_CLEAN,MAE_ALL,R2_ALL
+mean baseline,1110.51,65.08,-0.0922,1152.06,-0.08691
+distance-only (log-log),134.01,5.71,0.98144,188.62,0.81521
+linear (no time),103.45,4.4,0.98987,158.61,0.81957
+linear (+ time),49.8,2.13,0.997,105.71,0.82827
+GBM 300it/63leaf (no time),94.01,4.09,0.9905,149.26,0.82096
+GBM 300it/63leaf (+ time),95.56,4.21,0.99014,150.64,0.82167

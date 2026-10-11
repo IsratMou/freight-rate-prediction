@@ -1,0 +1,5 @@
+evaluation,n,MAE,RMSE,MAPE,R2
+all test rows,9523,104.267,632.7261,4.5838,0.8281
+clean test rows,9379,48.3021,73.536,2.0764,0.9971
+baseline: linear log-log on distance,9523,188.6237,656.0076,8.1788,0.8152
+baseline: predict the mean,9523,1178.8033,1526.2263,83.4267,-0.0002

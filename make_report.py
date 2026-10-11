@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Builds reports/freight_rate_report.docx — the written submission for the assessment."""
+import os
+import numpy as np
+import pandas as pd
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+
+OUT = "reports/freight_rate_report.docx"
+doc = Document()
+
+# ---- base styles ----
+st = doc.styles["Normal"]
+st.font.name = "Calibri"
+st.font.size = Pt(10.5)
+st.paragraph_format.space_after = Pt(6)
+for lvl, sz in [(1, 16), (2, 13), (3, 11.5)]:
+    h = doc.styles[f"Heading {lvl}"]
+    h.font.name = "Calibri"
+    h.font.size = Pt(sz)
+    h.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+    h.paragraph_format.space_before = Pt(14 if lvl == 1 else 10)
+    h.paragraph_format.space_after = Pt(4)
+
+
+def para(text, bold=False, italic=False, size=None, space_after=6):
+    p = doc.add_paragraph()
+    r = p.add_run(text)
+    r.bold = bold
+    r.italic = italic
+    if size:
+        r.font.size = Pt(size)
+    p.paragraph_format.space_after = Pt(space_after)
+    return p
+
+
+def bullet(text, bold_prefix=None):
+    p = doc.add_paragraph(style="List Bullet")
+    if bold_prefix:
+        r = p.add_run(bold_prefix)
+        r.bold = True
+    p.add_run(text)
+    p.paragraph_format.space_after = Pt(3)
+    return p
+
+
+def numbered(text, bold_prefix=None):
+    p = doc.add_paragraph(style="List Number")
+    if bold_prefix:
+        r = p.add_run(bold_prefix)
+        r.bold = True
+    p.add_run(text)
+    p.paragraph_format.space_after = Pt(3)
+    return p
+
+
+def table(headers, rows, widths=None, font=9.5):
+    t = doc.add_table(rows=1, cols=len(headers))
+    t.style = "Light Grid Accent 1"
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for i, h in enumerate(headers):
+        c = t.rows[0].cells[i]
+        c.text = ""
+        r = c.paragraphs[0].add_run(h)
+        r.bold = True
+        r.font.size = Pt(font)
+    for row in rows:
+        cells = t.add_row().cells
+        for i, v in enumerate(row):
+            cells[i].text = ""
+            r = cells[i].paragraphs[0].add_run(str(v))
+            r.font.size = Pt(font)
+    if widths:
+        for row in t.rows:
+            for i, w in enumerate(widths):
+                row.cells[i].width = Inches(w)
+    return t
+
+
+def figure(path, width, caption):
+    if os.path.exists(path):
+        doc.add_picture(path, width=Inches(width))
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p = doc.add_paragraph()
+        r = p.add_run(caption)
+        r.italic = True
+        r.font.size = Pt(8.5)
+        r.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_after = Pt(10)
+
+
+# ================================================================= title
+t = doc.add_heading("Freight Rate Prediction — Solution Report", level=0)
+para("Machine Learning Engineer assessment · trained on train-test.csv (48,000 loads, Jan–Oct 2025).",
+     italic=True, size=9.5)
+para("")
+
+# ================================================================= 1
+doc.add_heading("1. Summary", level=1)
+para("The target posted_rate is close to a deterministic function of distance (log-log R² = 0.97), "
+     "so the interesting part of this problem is not model capacity but data quality and getting the "
+     "residual 2–3% right. The final model is a log-linear regression with:")
+bullet("log(distance) and log(distance)² — the dominant driver; the log-log relation is slightly convex.")
+bullet("market_index, quote_signal, log(|weight|), equipment indicators.")
+bullet("pickup-city and delivery-city fixed effects (up to ±6.5% and remarkably stable in time).")
+bullet("a linear time trend (t = days since 2025-01-01) that captures a slow drift beyond market_index.")
+para("")
+para("Fitted on 47,323 rows after flagging 677 (1.41%) training targets. The selected batch-inference "
+     "policy fills null market signals with medians from supplied unlabeled features on that same date. "
+     "This availability assumption is explicit for the 249 null-market validation loads and for the "
+     "December chart inputs. The chronological holdout (train Jan–Aug → test Sep–Oct) compares "
+     "this selected policy with the training-median reference, using the SAME fitted model and evaluation "
+     "rows:", space_after=2)
+table(["feature-imputation policy / evaluation", "n", "MAE", "RMSE", "MAPE", "R²"],
+      [["same-date batch features / clean ← selected", "9,379", "$48.13", "$73.28", "2.07%", "0.99716"],
+       ["same-date batch features / ALL ← selected", "9,523", "$104.08", "$632.66", "4.58%", "0.82813"],
+       ["training-only medians / clean (reference)", "9,379", "$48.30", "$73.54", "2.08%", "0.99714"],
+       ["training-only medians / ALL (reference)", "9,523", "$104.27", "$632.73", "4.58%", "0.82809"]])
+para("The selected-policy metrics are regenerated by validation_signal_sensitivity.py; validate.py "
+     "produces the reference-policy plots and rolling table. The family comparison below likewise uses "
+     "reference imputation, not the selected-policy metric. Holdout labels enter only the evaluation "
+     "mask/metrics, never the fit or same-date signal values. Hidden-set accuracy remains unknown.",
+     size=9.5)
+figure("reports/holdout_series.png", 6.4,
+       "Reference-policy holdout: model prediction vs actual daily mean rate (clean rows).")
+
+# ================================================================= 2
+doc.add_heading("2. Data-quality issues found and how I addressed them", level=1)
+
+doc.add_heading("2.1 Corrupted targets — the single most important finding", level=2)
+para("The symmetric multiplicative structure strongly suggests synthetic target corruption introduced "
+     "for the challenge; this is an inference, not a known data-generating fact. In 677 rows (1.41%), "
+     "the apparent target multipliers are far outside the core. Fitting a "
+     "reference model and looking at actual/expected shows a sharp core (98.6% of rows within ±25% of "
+     "prediction, σ ≈ 3.9% in log space) plus two well-separated multiplicative tails — ×0.17–×0.51 "
+     "(337 rows) and ×2.09–×5.75 (340 rows) — near log-symmetric (−431 vs +419 in log space).")
+bullet("These rows are not predictable from the features: a gradient-boosted classifier on all "
+       "features scores 5-fold CV AUC = 0.494. The tail is not predictable from these features in "
+       "this audit, so it should not drive training; that does not guarantee hidden targets are clean.")
+bullet("Leaving them in does not materially move the coefficients — the two tails are near log-symmetric "
+       "(−431 vs +419 in log space) — but it inflates all-row RMSE ~9× ($73 → $633) and hides the model's "
+       "clean-core accuracy. They are detected with a MAD-based robust threshold (|residual| > 6·1.4826·MAD from "
+       "a simple reference model) and excluded from training. The filter is applied only to labeled "
+       "training data: validation and December rows are always predicted, never dropped.")
+figure("reports/target_corruption.png", 5.6,
+       "Residuals of all 48,000 targets against a reference model: clean core + 677 corrupted rows (clipped at ±300%).")
+
+doc.add_heading("2.2 Negative weights", level=2)
+para("292 rows have negative weight (down to –47,500 lb) sitting inside a clean 0–47,500 lb distribution. "
+     "|weight| lands exactly in the valid range, so this is consistent with sign-flip corruption: "
+     "corrected with abs().")
+
+doc.add_heading("2.3 Jittered lane distances and suspect city coordinates", level=2)
+para("Two further quirks, both investigated and deliberately left as-is:")
+bullet("The same pickup→delivery lane reports distances with a median CV of 1.8%. Replacing them with a "
+       "lane median has no measurable effect on fit (R² 0.99644 → 0.99644), so no repair was applied.")
+bullet("City coordinates are displaced from real city locations: compared against the public GeoName city "
+       "list with an automated, reproducible match (highest-population exact-name rule, 64/64 cities "
+       "matched), the median error is ~127 miles and only 3 cities sit within 10 miles — far beyond the "
+       "usual city-centre ambiguity (Boston and Providence even share a clipped longitude of −69.5). "
+       "Whether this is deliberate corruption or a preprocessing artifact remains an inference; the "
+       "displacement itself is a measured property of the data. I also tested whether the rate was "
+       "generated from true city-to-city distances: that fits far worse (robust σ 0.183 vs 0.040), so the "
+       "rate follows the distance column as given. Since no map-based features are used, the coordinates "
+       "are harmless here.")
+
+doc.add_heading("2.4 Missing values", level=2)
+para("In the labeled training split, missing weight (0.62%) and market_index (0.78%) use "
+     "training-partition medians. At inference, validation has 249/12,000 null market_index values: "
+     "each is filled from supplied same-date validation FEATURE medians if available (otherwise the "
+     "stored training median); missing weights still use the training median. No validation targets are "
+     "read. This batch-feature availability assumption is evaluated against the training-median "
+     "reference in section 1.")
+
+# ================================================================= 3
+doc.add_heading("3. Validation strategy and data split", level=1)
+para("The task requires predicting future months (validation and December are future periods), so all "
+     "evaluation here is chronological. For transparency, a random 80/20 split was also measured: it looks "
+     "only ~5.7% better on clean MAE (46.76 vs 49.58) than the time split — there are 0 exact duplicate "
+     "rows, and recurring pickup–delivery lanes (47,933 rows) are normal freight traffic, not duplicated "
+     "feature vectors. All evaluation is therefore time-based:", space_after=3)
+numbered("train Jan–Aug → test Sep–Oct — a two-month horizon, the closest available analogue of "
+         "predicting November and December. The rolling metrics and plots below use training-median "
+         "reference imputation; selected-policy two-month metrics are in section 1.")
+numbered("rolling-origin: six consecutive folds, each training on everything up to the 1st and testing on "
+         "the following month. This is how the time-trend treatment was chosen.")
+numbered("the corruption threshold is estimated inside each fold, never on the test period.")
+para("")
+table(["train ends", "test month", "n (clean)", "MAE", "RMSE", "MAPE", "R²"],
+      [["2025-05-01", "2025-06", "4,851", "$42.67", "$60.44", "1.82%", "0.998"],
+       ["2025-06-01", "2025-07", "4,720", "$48.83", "$75.95", "1.92%", "0.997"],
+       ["2025-07-01", "2025-08", "4,847", "$68.77", "$95.40", "2.81%", "0.995"],
+       ["2025-08-01", "2025-09", "4,691", "$51.55", "$72.43", "2.20%", "0.997"],
+       ["2025-09-01", "2025-10", "4,606", "$55.79", "$86.10", "2.28%", "0.996"],
+       ["2025-10-01", "2025-11", "4,773", "$40.70", "$59.12", "1.80%", "0.998"]])
+para("")
+figure("reports/holdout_residuals.png", 4.4,
+       "Hold-out log residuals (clean rows): centred on zero, 11th–89th percentile ≈ ±2%.")
+figure("reports/holdout_scatter.png", 4.2,
+       "Predicted vs actual on the hold-out, clean rows (log-log axes).")
+
+# ================================================================= 4
+doc.add_heading("4. Model choice — model families compared under future-like validation", level=1)
+para("In the exploratory phase I benchmarked regression, boosting and a hybrid. This first table "
+     "reports earlier candidate configurations on an out-of-time holdout (not the final fixed-mask audit):",
+     space_after=3)
+table(["model", "MAE (clean)", "RMSE (clean)", "R² (clean)"],
+      [["parametric OLS (city FE + trend)", "$48.02", "$73.12", "0.9972"],
+       ["OLS + GBM residual correction", "$47.02", "$71.75", "0.9973"],
+       ["HistGradientBoosting (log target)", "$56.77", "$85.15", "0.9962"],
+       ["HistGradientBoosting (raw $)", "$59.26", "$87.47", "0.9960"],
+       ["HistGradientBoosting (native categoricals)", "$53.63", "$80.21", "0.9966"]])
+para("")
+para("Reference-imputation family audit, Sep–Oct holdout: every candidate uses the same fixed, model-independent "
+     "clean mask for evaluation, alongside ALL holdout targets (including the flagged tail). "
+     "No holdout row is used for fitting; this audit fits the compared candidates without robust target "
+     "filtering, so linear+time below is not the cleaned shipped pipeline:", space_after=3)
+table(["family", "clean MAE", "all-row MAE", "all-row R²"],
+      [["linear log-model, no time", "$103.45", "$158.61", "0.81957"],
+       ["linear log-model + time ← chosen", "$49.80", "$105.71", "0.82827"],
+       ["GBM, no time", "$94.01", "$149.26", "0.82096"],
+       ["GBM + time", "$95.56", "$150.64", "0.82167"]])
+para("The complete auditable table (also mean and distance baselines, MAPE and clean R²) is "
+     "reports/model_family_audit.csv, reproduced by optional model_family_audit.py. In the actual shipped "
+     "pipeline, training-only target cleaning with reference imputation gives clean MAE $48.30 / "
+     "all-row MAE $104.27; the selected same-date policy gives clean MAE $48.13 / all-row $104.08 "
+     "(summary table). All-row numbers matter because hidden targets might also contain "
+     "corruption; none is removed from validation or December predictions. The hybrid looked marginally "
+     "better on one exploratory split, but across six rolling folds its average MAE change was −15.8% "
+     "(worse on 4 of 6); we did not ship it. Among the evaluated models under this out-of-time protocol, "
+     "the linear log-model with a time trend performed best; this is not a claim that regression is "
+     "inherently superior to boosting. Hidden-validation accuracy is not available.", space_after=8)
+
+doc.add_heading("4.1 The time trend: what it is and why it is safe to extrapolate", level=2)
+para("After accounting for market_index, a slow drift remains. I compared four treatments on the rolling "
+     "folds and the 2-month hold-out:", space_after=3)
+table(["time treatment", "mean MAE (6 folds)", "2-month hold-out MAE", "comment"],
+      [["none", "$72.39", "$102.78", "drifts out of calibration"],
+       ["linear trend on full history  ← chosen", "$50.92", "$48.02", "lowest average MAE"],
+       ["last-level offset (28 days)", "$54.87", "$68.02", "over-reacts to the most recent month"],
+       ["linear trend on recent window (120 days)", "$51.91", "$52.75", "similar, slightly worse"]])
+para("")
+para("A second, complementary comparison — seven rolling two-month windows (closer to the actual "
+     "two-month forecast horizon), scoring four time treatments on clean rows:", space_after=3)
+table(["test window", "no time", "linear (+t)  ← chosen", "linear+anchor", "anchor-only"],
+      [["Mar–Apr", "141.6", "138.6", "138.5", "140.9"],
+       ["Apr–May", "264.4", "248.3", "248.5", "264.8"],
+       ["May–Jun", "65.6", "51.1", "52.5", "65.5"],
+       ["Jun–Jul", "69.9", "56.3", "56.3", "66.5"],
+       ["Jul–Aug", "56.9", "106.7", "115.7", "47.3"],
+       ["Aug–Sep", "93.3", "55.8", "49.3", "74.4"],
+       ["Sep–Oct", "103.5", "49.8", "56.4", "71.7"],
+       ["mean, all 7 folds", "113.6", "100.9", "102.5", "104.4"],
+       ["mean, last 4 folds", "80.9", "67.2", "69.4", "65.0"]])
+para("")
+para("The linear trend wins 6 of these 7 windows; the single loss is Jul–Aug, where market_index fell and "
+     "the fitted trend overshot (bias +4.1%). Preferring the most recent windows when judging that "
+     "trade-off is a deployment assumption (validation and December are future months), stated as such — "
+     "not a mathematical fact. The 'anchor-only' variant (last-30-day offset, no slope) was measured for "
+     "comparison but is not part of the shipped pipeline.", size=10)
+para("")
+para("At full fit the trend is +0.0213%/day (≈ +7.8%/year) and the model's mean residual over the last "
+     "28 days is +0.0001 in log space — i.e. the fitted trend line is exactly at the recent level, which "
+     "is what makes extrapolating it two months into November–December defensible (with Jul–Aug the "
+     "known exception).")
+
+# ================================================================= 5
+doc.add_heading("5. Final model", level=1)
+para("log(posted_rate) = 1.0747  +  0.6864·log(distance)  +  0.01430·log(distance)²  +  0.14395·market_index  "
+     "+  0.01865·quote_signal  +  0.08047·log(|weight|)  +  0.12124·is_reefer  +  0.08032·is_flatbed  "
+     "+  0.000213·t  +  pickup-city FEs  +  delivery-city FEs", size=9.5)
+para("")
+table(["term", "coefficient", "interpretation"],
+      [["log(distance)", "0.6864", "+1% distance ≈ +0.69% rate (plus convexity)"],
+       ["log(distance)²", "0.01430", "long hauls pay slightly more than proportional"],
+       ["market_index", "0.14395", "+0.1 in market index ≈ +1.44% rate"],
+       ["quote_signal", "0.01865", "small but highly significant (t=50)"],
+       ["log(|weight|)", "0.08047", "heavier loads cost slightly more"],
+       ["Reefer / Flatbed", "+12.89% / +8.36%", "vs Dry Van"],
+       ["t (days)", "0.000213", "≈ +7.8%/year drift"],
+       ["city FEs", "up to ±6.5%", "e.g. Dallas/OKC/Houston up, Syracuse/Buffalo/Detroit down"],
+       ["fit", "R² = 0.99872", "residual σ = 2.3% (robust 2.2%)"]])
+para("")
+para("City effects were verified as stable over time — the Jan–Aug city effect estimates correlate 0.99 "
+     "with the Sep–Oct estimates — which is what justifies using them for future months.", size=10)
+para("New markets: validation.csv contains 8 cities never seen in training (12.1% of its rows). "
+     "Those rows get the prior-mean city effect (mean of the fitted city effects, ≈ +3.2%) rather than "
+     "the baseline city's 0% — validated by leave-one-city-out ($66.7 clean MAE vs $78.2 for a zeros "
+     "fallback; oracle $46.6). December chart inputs contain no unseen cities.", size=10)
+
+# ================================================================= 6
+doc.add_heading("6. December predictions (scorer output)", level=1)
+para("The fixed December scenario is Lexington → Fort Wayne, 360 miles, Dry Van, 32,000 lb, "
+     "with only the date changing. december-chart-inputs.csv omits market_index / quote_signal. The "
+     "SUBMITTED predictions fill each missing signal with the median of that feature among supplied "
+     "validation.csv rows on the SAME date (all 31 dates matched). No validation target/posting rate is "
+     "read. This is not target leakage, but it assumes those same-date validation features were available "
+     "when chart predictions were made. If they are unavailable at inference, training-only medians "
+     "are the fallback. The 12,000 regular validation predictions also use supplied row features; "
+     "249 with null market_index get the same-date supplied validation-feature median (no target). "
+     "If inference is strictly row-by-row without the day's other feature rows, this assumption "
+     "does not hold for either prediction file.")
+para("")
+figure("reports/candidate_december.png", 6.6,
+       "Official candidate_december.png — produced by the supplied score.py from the two submitted CSVs.")
+para("Sensitivity using the SAME frozen model; only the two missing signals change. Same-date-feature "
+     "medians produce the submitted curve, whose daily waves reflect the available market signal; "
+     "using training-only medians instead gives a flatter curve with a different peak. Neither the "
+     "fallback rates nor the chart below were submitted as replacement predictions.", size=10)
+table(["signal source", "December mean", "range", "peak date"],
+      [["supplied same-date validation features (submitted)", "$839.05", "$824.42–$854.51", "Dec 25"],
+       ["training-only medians (sensitivity)", "$853.91", "$851.19–$856.65", "Dec 31"]])
+para("Same-date minus fallback: −$14.86 mean, $14.86 mean absolute difference, $27.57 maximum "
+     "absolute difference (up to 3.235% of fallback). Exact daily values and signal medians: "
+     "reports/december_signal_sensitivity.csv; re-run december_signal_sensitivity.py to regenerate.",
+     size=10)
+figure("reports/december_signal_sensitivity.png", 6.4,
+       "December feature-availability sensitivity; the official submitted series remains unchanged.")
+para("The scorer validates CSV structure, required IDs, prediction positivity and creates a chart. "
+     "Passing it does not measure or establish accuracy against Spotter's hidden validation targets.",
+     italic=True, size=9.5)
+
+# ================================================================= 7
+doc.add_heading("7. Deliverables and how to reproduce", level=1)
+bullet("freight_rate_model.py — trains on data/train-test.csv and writes the 12,000-row CSV and "
+       "the 31-row December CSV. Core fit/predict dependencies: pandas and numpy.")
+bullet("validate.py — reproduces reference-imputation holdout/rolling metrics and charts (matplotlib).")
+bullet("validation_signal_sensitivity.py — the selected vs reference holdout comparison.")
+bullet("model_family_audit.py — optional fixed-mask clean/all-row family comparison; requires scikit-learn.")
+bullet("december_signal_sensitivity.py — reproduces the same-date vs training-median sensitivity "
+       "without changing either submitted output CSV.")
+bullet("outputs/ — BOTH final CSVs; reports/ — this DOCX, official scorer chart, diagnostics and "
+       "sensitivity chart. A Loom video/link still needs to be recorded and supplied by the candidate.")
+para("")
+para("Commands:", space_after=2)
+p = doc.add_paragraph()
+r = p.add_run("python freight_rate_model.py --train data/train-test.csv --validation data/validation.csv "
+              "--template data/validation-predictions-template.csv --december "
+              "data/december-chart-inputs.csv --out outputs/validation_predictions.csv\n"
+              "python score.py --predictions outputs/validation_predictions.csv "
+              "--december-predictions outputs/december-chart-inputs.csv\n"
+              "python validate.py; python validation_signal_sensitivity.py; "
+              "python december_signal_sensitivity.py; python make_report.py")
+r.font.name = "Consolas"
+r.font.size = Pt(9)
+
+doc.save(OUT)
+print("wrote", OUT)
